@@ -218,13 +218,39 @@ export default function ModelingPanel({ activeFile, selectedElement, onRefresh }
           </p>
           
           {selectedElement ? (
-            <div className="glass-panel-light p-4 space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <p className="text-[10px] text-surface-500 font-mono">ID: #{selectedElement.expressID}</p>
-                  <p className="text-xs font-bold text-surface-200">{selectedElement.ifcType}</p>
+            <div className="space-y-4">
+              <div className="bg-surface-900/40 border border-white/5 rounded-2xl p-4 space-y-3 shadow-inner">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                      <p className="text-[10px] text-surface-500 font-mono tracking-tighter">EXPRESS ID: #{selectedElement.expressID}</p>
+                    </div>
+                    <h4 className="text-base font-bold text-white tracking-tight leading-tight">
+                      {selectedElement.ifcType?.replace('IFC', '') || 'Generic Element'}
+                    </h4>
+                  </div>
+                  <div className="px-2 py-0.5 rounded-md bg-green-500/10 border border-green-500/20 text-green-400 text-[9px] font-bold tracking-widest uppercase">
+                    Selected
+                  </div>
                 </div>
-                <div className="badge badge-ifc uppercase text-[9px]">{selectedElement.ifcType?.replace('IFC', '')}</div>
+
+                {selectedElement.dimensions && (
+                  <div className="grid grid-cols-3 gap-2 py-2 border-y border-white/5">
+                    <div className="flex flex-col">
+                      <span className="text-[9px] text-surface-500 uppercase font-medium">Width</span>
+                      <span className="text-[13px] font-mono text-accent-300 font-bold">{selectedElement.dimensions.x}m</span>
+                    </div>
+                    <div className="flex flex-col border-x border-white/5 px-2">
+                      <span className="text-[9px] text-surface-500 uppercase font-medium">Depth</span>
+                      <span className="text-[13px] font-mono text-accent-300 font-bold">{selectedElement.dimensions.y}m</span>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-[9px] text-surface-500 uppercase font-medium text-right">Height</span>
+                      <span className="text-[13px] font-mono text-accent-300 font-bold">{selectedElement.dimensions.z}m</span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-1">

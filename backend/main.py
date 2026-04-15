@@ -10,8 +10,18 @@ import os
 import sys
 import json
 import shutil
+import re
 from pathlib import Path
 from typing import Optional
+
+# ── Load .env ──────────────────────────────────────────────────────
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,11 +86,20 @@ mcp_app = mcp.http_app(path="/mcp")
 app.mount("/mcp", mcp_app)
 
 # ── Gemini API Configuration ────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBklbSKtCqPl0Lp8xmsEQpE63thu_dq54I")
+GEMINI_API_KEY = (
+    os.environ.get("GEMINI_API_KEY")
+    or os.environ.get("GOOGLE_API_KEY")
+    or os.environ.get("GOOGLE_GENAI_API_KEY")
+)
+print(f"[startup] GEMINI_API_KEY set: {bool(GEMINI_API_KEY)} | prefix: {GEMINI_API_KEY[:12] if GEMINI_API_KEY else 'None'}")
 
 
 def get_gemini_client():
     """Gemini API 클라이언트를 반환합니다."""
+    if not GEMINI_API_KEY:
+        print("Warning: GEMINI_API_KEY가 설정되지 않아 Gemini LLM을 사용할 수 없습니다.")
+        return None
+
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -305,6 +324,35 @@ async def extract_data(filename: str):
         raise HTTPException(500, f"데이터 추출 오류: {str(e)}")
 
 
+@app.get("/api/boq/{filename}")
+async def get_boq(filename: str):
+    """IFC 물량 산출(BOQ) REST endpoint"""
+    from services.ifc_utils import open_ifc
+    from services.boq_calculator import calculate_boq
+
+    filepath = None
+    for directory in [OUTPUT_DIR, UPLOAD_DIR]:
+        candidate = directory / filename
+        if candidate.exists():
+            filepath = candidate
+            break
+
+    if not filepath:
+        raise HTTPException(404, f"파일을 찾을 수 없습니다: {filename}")
+
+    try:
+        model = open_ifc(str(filepath))
+        boq_data = calculate_boq(model)
+
+        return {
+            "success": True,
+            "filename": filename,
+            "boq": boq_data,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"물량 산출 오류: {str(e)}")
+
+
 @app.post("/api/chat")
 async def chat_with_llm(request: ChatRequest):
     """
@@ -363,7 +411,7 @@ async def chat_with_llm(request: ChatRequest):
         from google import genai
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-flash-latest",
             contents=messages,
             config=genai.types.GenerateContentConfig(
                 system_instruction=system_prompt,
@@ -371,10 +419,20 @@ async def chat_with_llm(request: ChatRequest):
             ),
         )
 
-        assistant_text = response.text
+        assistant_text = response.text if response.text else ""
+
+        if not assistant_text:
+            print("[chat] Gemini returned empty response, falling back")
+            return await _rule_based_chat(request)
+
+        print(f"[chat] Gemini OK. response[:80]={repr(assistant_text[:80])}")
 
         # Parse tool calls from response
-        tool_result = _extract_and_execute_tool(assistant_text)
+        tool_result = None
+        try:
+            tool_result = _extract_and_execute_tool(assistant_text)
+        except Exception as te:
+            print(f"[chat] tool extract error: {te}")
 
         return {
             "success": True,
@@ -395,6 +453,58 @@ async def _rule_based_chat(request: ChatRequest) -> dict:
     Gemini API 없이 규칙 기반으로 사용자 요청을 처리합니다.
     """
     message = request.message.lower().strip()
+
+    # IFC 질의 처리 (개수, 정보 조회) — 수정 키워드보다 먼저 처리
+    if request.filename and request.filename.endswith(".ifc"):
+        is_query = any(kw in message for kw in [
+            "몇개", "몇 개", "얼마나", "몇가지", "개수", "알려줘", "보여줘",
+            "how many", "count", "list", "show"
+        ])
+
+        if any(kw in message for kw in ["창문", "window", "윈도우"]):
+            count_answer = _handle_ifc_count_query(request.filename, message, "IfcWindow")
+            if count_answer:
+                return {"success": True, "response": count_answer, "tool_result": None}
+
+        if any(kw in message for kw in ["문", "door"]) and is_query:
+            count_answer = _handle_ifc_count_query(request.filename, message, "IfcDoor")
+            if count_answer:
+                return {"success": True, "response": count_answer, "tool_result": None}
+
+        if any(kw in message for kw in ["벽", "wall"]) and is_query:
+            count_answer = _handle_ifc_count_query(request.filename, message, "IfcWall")
+            if count_answer:
+                return {"success": True, "response": count_answer, "tool_result": None}
+
+        if any(kw in message for kw in ["기둥", "column"]) and is_query:
+            count_answer = _handle_ifc_count_query(request.filename, message, "IfcColumn")
+            if count_answer:
+                return {"success": True, "response": count_answer, "tool_result": None}
+
+        if any(kw in message for kw in ["슬래브", "slab", "바닥"]) and is_query:
+            count_answer = _handle_ifc_count_query(request.filename, message, "IfcSlab")
+            if count_answer:
+                return {"success": True, "response": count_answer, "tool_result": None}
+
+        # 두께/높이 정보 조회 (수정이 아닌 질의인 경우)
+        if is_query and any(kw in message for kw in ["두께", "높이", "크기", "치수", "size"]):
+            from services.ifc_utils import open_ifc, get_model_summary, get_spatial_structure
+            filepath = None
+            for directory in [OUTPUT_DIR, UPLOAD_DIR]:
+                candidate = directory / request.filename
+                if candidate.exists():
+                    filepath = candidate
+                    break
+            if filepath:
+                model = open_ifc(str(filepath))
+                summary = get_model_summary(model)
+                total = sum(summary.values())
+                lines = [f"📊 **{request.filename}** 구성 요소:"]
+                for ifc_type, count in sorted(summary.items()):
+                    lines.append(f"  - {ifc_type}: {count}개")
+                lines.append(f"\n총 {total}개 요소가 있습니다.")
+                lines.append("\n개별 요소의 치수 정보는 3D 뷰어에서 객체를 클릭하면 확인할 수 있습니다.")
+                return {"success": True, "response": "\n".join(lines), "tool_result": None}
 
     # File info
     if any(kw in message for kw in ["파일", "목록", "리스트", "file"]):
@@ -490,10 +600,51 @@ async def _rule_based_chat(request: ChatRequest) -> dict:
             "1. 📐 **CAD→IFC 변환**: DXF 파일을 IFC로 변환\n"
             "2. 📊 **IFC 분석**: 모델 구조/속성 분석\n"
             "3. ✏️ **IFC 수정**: 요소 이동, 속성 변경, 삭제\n\n"
-            "파일을 업로드하고 원하는 작업을 말씀해주세요!"
+            "현재 LLM 키가 설정되어 있지 않거나 LLM 서비스가 연결되지 않아 기본 응답 모드로 동작하고 있습니다.\n"
+            "GEMINI_API_KEY를 설정하면 더 자연스러운 LLM 기반 답변을 받을 수 있습니다."
         ),
         "tool_result": None,
     }
+
+
+def _handle_ifc_count_query(filename: str, message: str, element_type: str) -> Optional[str]:
+    try:
+        from services.ifc_utils import open_ifc, filter_elements
+
+        filepath = None
+        for directory in [OUTPUT_DIR, UPLOAD_DIR]:
+            candidate = directory / filename
+            if candidate.exists():
+                filepath = candidate
+                break
+
+        if not filepath:
+            return None
+
+        storey = _parse_storey_name(message)
+        target_filter = {"type": element_type}
+        if storey:
+            target_filter["storey"] = storey
+
+        model = open_ifc(str(filepath))
+        elements = filter_elements(model, target_filter)
+        if elements is None:
+            return None
+
+        kind = element_type[3:]
+        if storey:
+            return f"'{filename}' 파일의 {storey}에 있는 {kind} 개수는 {len(elements)}개입니다."
+        return f"'{filename}' 파일에 있는 {kind} 개수는 {len(elements)}개입니다."
+    except Exception as e:
+        print(f"[_handle_ifc_count_query] error: {e}")
+        return None
+
+
+def _parse_storey_name(message: str) -> Optional[str]:
+    match = re.search(r"(\d+)\s*(?:층|[fF](?:loor)?\b)", message)
+    if match:
+        return match.group(1) + "층"
+    return None
 
 
 def _build_file_context() -> str:

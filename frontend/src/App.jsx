@@ -5,6 +5,7 @@ import IFCViewer from './components/IFCViewer';
 import ChatPanel from './components/ChatPanel';
 import Sidebar from './components/Sidebar';
 import ModelingPanel from './components/ModelingPanel';
+import BOQPanel from './components/BOQPanel';
 import { checkHealth } from './utils/api';
 
 export default function App() {
@@ -13,7 +14,7 @@ export default function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' or 'modeling'
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'modeling' | 'boq'
   const [selectedElement, setSelectedElement] = useState(null);
 
   // Check server health
@@ -154,6 +155,16 @@ export default function App() {
             >
               🏗️ Modeling
             </button>
+            <button
+              onClick={() => setActiveTab('boq')}
+              className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'boq'
+                ? 'bg-green-700 text-white shadow-lg'
+                : 'text-surface-500 hover:bg-white/5 hover:text-surface-300'
+              }`}
+            >
+              📊 BOQ
+            </button>
           </div>
 
           <div className="flex-1 overflow-hidden">
@@ -163,12 +174,14 @@ export default function App() {
                 selectedElement={selectedElement}
                 onModelModified={handleModelActionComplete}
               />
-            ) : (
+            ) : activeTab === 'modeling' ? (
               <ModelingPanel
                 activeFile={activeFile}
                 selectedElement={selectedElement}
                 onRefresh={handleModelActionComplete}
               />
+            ) : (
+              <BOQPanel activeFile={activeFile} />
             )}
           </div>
         </div>

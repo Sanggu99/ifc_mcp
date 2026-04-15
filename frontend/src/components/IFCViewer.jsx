@@ -27,6 +27,13 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
   const [modelInfo, setModelInfo] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
 
+  // ── Section Cut State ────────────────────────────────────────────
+  const [sectionEnabled, setSectionEnabled] = useState(false);
+  const [sectionAxis, setSectionAxis]   = useState('y');   // 'x' | 'y' | 'z'
+  const [sectionValue, setSectionValue] = useState(50);    // 0-100 %
+  const modelBoundsRef = useRef(null);  // { min, max, size, center }
+  const clippingPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, -1, 0), 0));
+
   // ── Initialize Three.js Scene ──────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
@@ -57,6 +64,7 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
+    renderer.localClippingEnabled = true;
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -183,12 +191,22 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
         object.material.emissive.setHex(0x2ecc71); // Green selection
         highlightMeshRef.current = object;
 
+        // Calculate size for dashboard/modeling panel
+        const box = new THREE.Box3().setFromObject(object);
+        const size = box.getSize(new THREE.Vector3());
+        const dimensions = {
+          x: parseFloat(size.x.toFixed(2)),
+          y: parseFloat(size.y.toFixed(2)),
+          z: parseFloat(size.z.toFixed(2))
+        };
+
         setSelectedId(expressID);
         if (onSelectElement) {
           onSelectElement({ 
             expressID, 
             ifcType, 
             meshId: object.id,
+            dimensions,
             point: { x: point.x, y: point.y, z: point.z } 
           });
         }
@@ -457,6 +475,14 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
           cameraRef.current.updateProjectionMatrix();
         }
 
+        // Store bounds for section cut
+        modelBoundsRef.current = {
+          min: box.min.clone(),
+          max: box.max.clone(),
+          size: size.clone(),
+          center: center.clone(),
+        };
+
         setModelInfo({
           name: activeFile,
           meshCount: modelGroup.children.length,
@@ -483,6 +509,40 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
   useEffect(() => {
     loadIFC();
   }, [activeFile, refreshTrigger, loadIFC]);
+
+  // ── Section Cut Effect ────────────────────────────────────────────
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    if (!sectionEnabled) {
+      renderer.clippingPlanes = [];
+      return;
+    }
+
+    const bounds = modelBoundsRef.current;
+    if (!bounds) return;
+
+    // Map sectionValue (0-100%) to world coordinate along chosen axis
+    const { min, max } = bounds;
+    let worldPos;
+    let normal;
+    if (sectionAxis === 'x') {
+      worldPos = min.x + (max.x - min.x) * (sectionValue / 100);
+      normal = new THREE.Vector3(-1, 0, 0);
+    } else if (sectionAxis === 'y') {
+      worldPos = min.y + (max.y - min.y) * (sectionValue / 100);
+      normal = new THREE.Vector3(0, -1, 0);
+    } else {
+      worldPos = min.z + (max.z - min.z) * (sectionValue / 100);
+      normal = new THREE.Vector3(0, 0, -1);
+    }
+
+    // THREE.Plane: normal·x + constant = 0  →  constant = worldPos
+    clippingPlaneRef.current.normal.copy(normal);
+    clippingPlaneRef.current.constant = worldPos;
+    renderer.clippingPlanes = [clippingPlaneRef.current];
+  }, [sectionEnabled, sectionAxis, sectionValue]);
 
   return (
     <div className="viewer-container">
@@ -529,9 +589,94 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
               <p className="text-[10px] text-green-400/80 uppercase font-bold tracking-wider mb-1">
                 Selected Element
               </p>
-              <p className="text-xs font-mono text-surface-200">
-                ID: #{selectedId}
-              </p>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs font-bold text-surface-100 uppercase">
+                  {highlightMeshRef.current?.userData?.ifcType?.replace('IFC', '') || 'Element'}
+                </p>
+                <p className="text-[11px] font-mono text-green-300">
+                  {(() => {
+                    if (!highlightMeshRef.current) return '';
+                    const box = new THREE.Box3().setFromObject(highlightMeshRef.current);
+                    const size = box.getSize(new THREE.Vector3());
+                    return `${size.x.toFixed(2)}m × ${size.y.toFixed(2)}m × ${size.z.toFixed(2)}m`;
+                  })()}
+                </p>
+                <p className="text-[9px] font-mono text-surface-400">
+                  ID: #{selectedId}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Section Cut Controls ──────────────────────────────── */}
+      {modelInfo && !loading && (
+        <div className="absolute top-3 right-3 z-20 flex flex-col gap-2 animate-fade-in">
+          {/* Toggle button */}
+          <button
+            onClick={() => setSectionEnabled(v => !v)}
+            className={`glass-panel-light px-3 py-1.5 text-xs font-semibold transition-colors ${
+              sectionEnabled
+                ? 'text-blue-300 border-blue-500/50 bg-blue-500/20'
+                : 'text-surface-400 hover:text-surface-200'
+            }`}
+            title="단면 자르기 ON/OFF"
+          >
+            ✂️ 단면 {sectionEnabled ? 'ON' : 'OFF'}
+          </button>
+
+          {/* Axis + Slider — only when enabled */}
+          {sectionEnabled && (
+            <div className="glass-panel-light px-3 py-2.5 flex flex-col gap-2 min-w-[160px]">
+              {/* Axis selector */}
+              <div className="flex gap-1">
+                {['x', 'y', 'z'].map(ax => (
+                  <button
+                    key={ax}
+                    onClick={() => setSectionAxis(ax)}
+                    className={`flex-1 py-0.5 text-[11px] font-bold rounded transition-colors ${
+                      sectionAxis === ax
+                        ? 'bg-blue-500/40 text-blue-200'
+                        : 'text-surface-400 hover:text-surface-200'
+                    }`}
+                  >
+                    {ax.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              {/* Slider */}
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between text-[10px] text-surface-500 font-mono">
+                  <span>0%</span>
+                  <span className="text-blue-300">{sectionValue}%</span>
+                  <span>100%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={sectionValue}
+                  onChange={e => setSectionValue(Number(e.target.value))}
+                  className="w-full accent-blue-400 cursor-pointer"
+                />
+              </div>
+
+              {/* World coordinate readout */}
+              {modelBoundsRef.current && (
+                <p className="text-[9px] text-surface-500 font-mono text-center">
+                  {(() => {
+                    const { min, max } = modelBoundsRef.current;
+                    const pos = sectionAxis === 'x'
+                      ? min.x + (max.x - min.x) * (sectionValue / 100)
+                      : sectionAxis === 'y'
+                        ? min.y + (max.y - min.y) * (sectionValue / 100)
+                        : min.z + (max.z - min.z) * (sectionValue / 100);
+                    return `${sectionAxis.toUpperCase()} = ${pos.toFixed(2)} m`;
+                  })()}
+                </p>
+              )}
             </div>
           )}
         </div>

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Uploads / Outputs (large binary files)
+backend/uploads/
+backend/outputs/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
