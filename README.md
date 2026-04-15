@@ -76,29 +76,137 @@ DXF 파일을 업로드하면 레이어 이름을 분석 (WALL, DOOR, COLUMN, SL
 
 ---
 
-## 시스템 아키텍처
+## Pipeline & Architecture
+
+### 데이터 파이프라인
+
+사용자의 Input이 어떻게 가공되어 최종 Output으로 출력되는지 단계별로 설명합니다.
+
+#### 경로 1 — DXF/CAD → IFC 3D 모델
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   Browser                        │
-│                                                  │
-│  ┌──────────────┐  ┌──────────┐  ┌───────────┐  │
-│  │  IFC Viewer  │  │ AI Chat  │  │ BOQ Panel │  │
-│  │  (Three.js)  │  │(Gemini)  │  │           │  │
-│  └──────┬───────┘  └────┬─────┘  └─────┬─────┘  │
-│         │               │              │         │
-└─────────┼───────────────┼──────────────┼─────────┘
-          │          REST API            │
-┌─────────┼───────────────┼──────────────┼─────────┐
-│         ▼               ▼              ▼         │
-│  ┌─────────────────────────────────────────────┐ │
-│  │              FastAPI + FastMCP              │ │
-│  ├──────────────┬──────────────┬──────────────┤ │
-│  │  IFC Parser  │  DXF→IFC     │  BOQ Engine  │ │
-│  │  (web-ifc)   │  Converter   │              │ │
-│  └──────────────┴──────────────┴──────────────┘ │
-│                      Backend                     │
-└─────────────────────────────────────────────────┘
+[Input: DXF 파일 업로드]
+        │
+        ▼
+  레이어 이름 파싱 (ezdxf)
+  WALL / DOOR / COLUMN / SLAB / WINDOW 등 식별
+        │
+        ▼
+  좌표 데이터 추출
+  각 레이어의 Line, Polyline, Insert 엔티티 → 3D 좌표 변환
+        │
+        ▼
+  IFC 요소 매핑 (IfcOpenShell)
+  레이어 → IfcWall / IfcDoor / IfcColumn / IfcSlab / IfcWindow
+  높이·두께·배치 정보를 IFC 표준 속성으로 변환
+        │
+        ▼
+  IFC 파일 생성 (.ifc 직렬화)
+        │
+        ▼
+[Output: 브라우저에서 3D 렌더링 (web-ifc + Three.js)]
+```
+
+#### 경로 2 — IFC 파일 → AI 분석 & BOQ
+
+```
+[Input: IFC 파일 선택]
+        │
+        ├──── web-ifc WASM 파싱 ────► Three.js Mesh 생성 ───► 3D Viewer 렌더링
+        │                                                            │
+        │                                                     클릭 → expressID
+        │
+        ├──── IfcOpenShell 파싱 ────► 요소별 속성 추출
+        │     (백엔드)               길이 / 면적 / 체적 / 개수
+        │          │
+        │          ├──────────────► BOQ Panel (물량 집계 테이블)
+        │          │
+        │          └──────────────► AI Context 주입
+        │                           선택 요소 정보 + 모델 전체 통계
+        │
+        └──── Gemini API ──────────► 자연어 질의 응답
+              (MCP Tool Calling)     "창문 몇 개야?" → IFC 파싱 → 답변 생성
+
+[Output: 3D 뷰 + BOQ 리포트 + AI 응답]
+```
+
+#### 경로 3 — Section Cut (실시간 단면)
+
+```
+[Input: 사용자가 X/Y/Z 축 선택 + 슬라이더 조작]
+        │
+        ▼
+  슬라이더 값 (0–100%) → 모델 Bounding Box 기준 월드 좌표 계산
+        │
+        ▼
+  THREE.Plane 생성
+  axis=Y → normal (0, -1, 0), constant = worldY
+        │
+        ▼
+  renderer.clippingPlanes 배열에 할당
+  (WebGLRenderer가 GPU 레벨에서 클리핑 처리)
+        │
+        ▼
+[Output: 실시간 단면 시각화 — 리렌더 없이 즉시 반영]
+```
+
+---
+
+### 시스템 아키텍처 다이어그램
+
+```mermaid
+flowchart LR
+    subgraph INPUT["📥 Input"]
+        DXF["DXF / CAD 파일"]
+        IFC_FILE["IFC 파일"]
+        USER_Q["자연어 질의"]
+    end
+
+    subgraph BACKEND["⚙️ Backend  ·  FastAPI + FastMCP"]
+        direction TB
+        PARSER["DXF Parser\nezdxf"]
+        BUILDER["IFC Builder\nIfcOpenShell"]
+        IFC_UTIL["IFC Analyzer\nIfcOpenShell"]
+        BOQ_ENG["BOQ Engine\n물량 산출"]
+        MCP_TOOLS["MCP Tools\nTool Calling"]
+        GEMINI["Gemini API\ngemini-flash-latest"]
+    end
+
+    subgraph FRONTEND["🖥️ Frontend  ·  React + Three.js"]
+        direction TB
+        VIEWER["IFC 3D Viewer\nweb-ifc + Three.js"]
+        SECTION["Section Cut\nClippingPlane"]
+        BOQ_UI["BOQ Panel\n물량 테이블"]
+        CHAT["AI Chat\n자연어 인터페이스"]
+    end
+
+    subgraph OUTPUT["📤 Output"]
+        RENDER["3D 렌더링"]
+        REPORT["BOQ 리포트"]
+        ANSWER["AI 응답"]
+    end
+
+    DXF      --> PARSER
+    PARSER   --> BUILDER
+    BUILDER  --> IFC_UTIL
+
+    IFC_FILE --> IFC_UTIL
+    IFC_UTIL --> BOQ_ENG
+    IFC_UTIL --> MCP_TOOLS
+
+    USER_Q   --> CHAT
+    CHAT     --> GEMINI
+    GEMINI   --> MCP_TOOLS
+    MCP_TOOLS --> IFC_UTIL
+
+    IFC_UTIL --> VIEWER
+    VIEWER   --> SECTION
+    BOQ_ENG  --> BOQ_UI
+    GEMINI   --> CHAT
+
+    VIEWER   --> RENDER
+    BOQ_UI   --> REPORT
+    CHAT     --> ANSWER
 ```
 
 ---
