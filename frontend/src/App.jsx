@@ -16,6 +16,7 @@ export default function App() {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'modeling' | 'boq'
   const [selectedElement, setSelectedElement] = useState(null);
+  const [dxfPlane, setDxfPlane] = useState('XY'); // 'XY', 'XZ', 'YZ'
 
   // Check server health
   useEffect(() => {
@@ -108,6 +109,7 @@ export default function App() {
             activeFile={activeFile} 
             refreshTrigger={refreshTrigger} 
             onSelectElement={setSelectedElement}
+            dxfPlane={dxfPlane}
           />
         </div>
 
@@ -179,6 +181,8 @@ export default function App() {
                 activeFile={activeFile}
                 selectedElement={selectedElement}
                 onRefresh={handleModelActionComplete}
+                dxfPlane={dxfPlane}
+                setDxfPlane={setDxfPlane}
               />
             ) : (
               <BOQPanel activeFile={activeFile} />

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as WebIFC from 'web-ifc';
-import { getFileUrl } from '../utils/api';
+import { getFileUrl, getDXFView } from '../utils/api';
 
 /**
  * IFC 3D Viewer — web-ifc를 직접 사용하여 IFC 파일의 지오메트리를
@@ -11,7 +11,7 @@ import { getFileUrl } from '../utils/api';
  * @thatopen/components의 IfcLoader 대신 web-ifc IfcAPI를 직접 사용하여
  * WASM 경로 문제를 회피하고 안정적인 렌더링을 보장합니다.
  */
-export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement }) {
+export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement, dxfPlane }) {
   const containerRef = useRef(null);
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
@@ -26,6 +26,16 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
   const [error, setError] = useState(null);
   const [modelInfo, setModelInfo] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  // DXF 레이어 선택 상태
+  const [selectedLayers, setSelectedLayers] = useState([]);
+  // DXF 레이어 선택 핸들러
+  const handleLayerToggle = (layer) => {
+    setSelectedLayers((prev) =>
+      prev.includes(layer)
+        ? prev.filter((l) => l !== layer)
+        : [...prev, layer]
+    );
+  };
 
   // ── Section Cut State ────────────────────────────────────────────
   const [sectionEnabled, setSectionEnabled] = useState(false);
@@ -283,12 +293,16 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
     return colors[upper] ?? 0xc0b8a8;
   }, []);
 
-  // ── Load IFC file ──────────────────────────────────────────────────
-  const loadIFC = useCallback(async () => {
-    if (!activeFile || !activeFile.toLowerCase().endsWith('.ifc')) return;
-    if (!sceneRef.current || !ifcApiRef.current) {
+  // ── Load File (IFC or DXF) ─────────────────────────────────────────
+  const loadFile = useCallback(async () => {
+    if (!activeFile) return;
+    const isIFC = activeFile.toLowerCase().endsWith('.ifc');
+    const isDXF = activeFile.toLowerCase().endsWith('.dxf');
+    if (!isIFC && !isDXF) return;
+
+    if (isIFC && (!sceneRef.current || !ifcApiRef.current)) {
       // Retry after web-ifc init
-      setTimeout(() => loadIFC(), 500);
+      setTimeout(() => loadFile(), 500);
       return;
     }
 
@@ -320,6 +334,107 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
     }
 
     try {
+      if (isDXF) {
+        // Fetch DXF Data
+        const viewData = await getDXFView(activeFile);
+        const modelGroup = new THREE.Group();
+        modelGroup.name = activeFile;
+        modelGroup.userData.isDXF = true;
+
+        // 항상 XY 평면(바닥) 기준으로 렌더링
+        const transformPoint = (p) => {
+          let [x, y, z] = p;
+          return new THREE.Vector3(x, y, z);
+        };
+
+        // --- 레이어별 그룹화 및 색상 적용 ---
+        // DXF 데이터는 lines, polylines, 각 엔티티에 layer/color 정보가 포함되어야 함
+        // { lines: [{start, end, layer, color}], polylines: [{points, is_closed, layer, color}], layers: ["WALL", ...] }
+        const layerGroups = {};
+        const layerColors = {};
+        // lines
+        if (viewData.lines && viewData.lines.length > 0) {
+          viewData.lines.forEach(l => {
+            const layer = l.layer || 'default';
+            if (!layerGroups[layer]) {
+              layerGroups[layer] = new THREE.Group();
+              layerGroups[layer].name = `layer:${layer}`;
+            }
+            // l.color: '#rrggbb' 또는 undefined
+            let color = 0x888888;
+            if (l.color && typeof l.color === 'string' && l.color.startsWith('#')) {
+              color = Number('0x' + l.color.slice(1));
+            }
+            layerColors[layer] = color;
+            const lineMat = new THREE.LineBasicMaterial({ color });
+            const lineGeo = new THREE.BufferGeometry();
+            lineGeo.setFromPoints([transformPoint(l.start), transformPoint(l.end)]);
+            const line = new THREE.Line(lineGeo, lineMat);
+            layerGroups[layer].add(line);
+          });
+        }
+        // polylines
+        if (viewData.polylines) {
+          viewData.polylines.forEach(poly => {
+            const layer = poly.layer || 'default';
+            if (!layerGroups[layer]) {
+              layerGroups[layer] = new THREE.Group();
+              layerGroups[layer].name = `layer:${layer}`;
+            }
+            let color = 0xaaaaaa;
+            if (poly.color && typeof poly.color === 'string' && poly.color.startsWith('#')) {
+              color = Number('0x' + poly.color.slice(1));
+            }
+            layerColors[layer] = color;
+            const polyMat = new THREE.LineBasicMaterial({ color });
+            const polyGeo = new THREE.BufferGeometry();
+            const pts = poly.points.map(p => transformPoint(p));
+            if (poly.is_closed) pts.push(pts[0].clone());
+            polyGeo.setFromPoints(pts);
+            const polyLine = new THREE.Line(polyGeo, polyMat);
+            layerGroups[layer].add(polyLine);
+          });
+        }
+        // 그룹을 모델에 추가
+        Object.values(layerGroups).forEach(g => modelGroup.add(g));
+
+        // Save layers to model info
+        const layers = viewData.layers || Object.keys(layerGroups);
+
+        scene.add(modelGroup);
+        modelGroupRef.current = modelGroup;
+
+        // Fit camera to model
+        const box = new THREE.Box3().setFromObject(modelGroup);
+        if (!box.isEmpty()) {
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const dist = maxDim * 1.8;
+
+          if (cameraRef.current && controlsRef.current) {
+            cameraRef.current.position.set(center.x, center.y + dist * 0.8, center.z + dist * 0.1);
+            controlsRef.current.target.copy(center);
+            controlsRef.current.update();
+            cameraRef.current.far = Math.max(5000, maxDim * 10);
+            cameraRef.current.updateProjectionMatrix();
+          }
+
+          modelBoundsRef.current = { min: box.min.clone(), max: box.max.clone(), size: size.clone(), center: center.clone() };
+
+          setModelInfo({
+            name: activeFile,
+            meshCount: Object.values(layerGroups).reduce((acc, g) => acc + g.children.length, 0),
+            dimensions: { x: size.x.toFixed(2), y: size.y.toFixed(2), z: size.z.toFixed(2) },
+            layers: layers,
+            layerColors: layerColors
+          });
+        }
+
+        setLoading(false);
+        return;
+      }
+
       // Fetch IFC file
       const url = getFileUrl(activeFile);
       const response = await fetch(url);
@@ -501,14 +616,30 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
       setLoading(false);
     } catch (err) {
       console.error('IFC load error:', err);
-      setError(`IFC 로딩 실패: ${err.message}`);
       setLoading(false);
     }
-  }, [activeFile, getColorForType]);
+  }, [activeFile, getColorForType, dxfPlane]);
+
+  // DXF 파일이 바뀌면 선택 레이어 초기화
+  useEffect(() => {
+    setSelectedLayers([]);
+  }, [activeFile]);
 
   useEffect(() => {
-    loadIFC();
-  }, [activeFile, refreshTrigger, loadIFC]);
+    loadFile();
+  }, [activeFile, refreshTrigger, loadFile, dxfPlane]);
+  // DXF 레이어 가시성 동기화
+  useEffect(() => {
+    if (!modelInfo || !modelGroupRef.current || !modelInfo.layers) return;
+    // DXF가 아닐 때는 무시
+    if (!modelGroupRef.current.userData.isDXF) return;
+    // 선택이 없으면 전체 표시
+    const showAll = selectedLayers.length === 0;
+    modelInfo.layers.forEach((layer) => {
+      const group = modelGroupRef.current.getObjectByName(`layer:${layer}`);
+      if (group) group.visible = showAll || selectedLayers.includes(layer);
+    });
+  }, [selectedLayers, modelInfo]);
 
   // ── Section Cut Effect ────────────────────────────────────────────
   useEffect(() => {
@@ -568,7 +699,7 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
         </div>
       )}
 
-      {/* Model info overlay */}
+      {/* Model info overlay + DXF 레이어 선택 UI */}
       {modelInfo && !loading && (
         <div className="absolute top-3 left-3 z-10 animate-fade-in flex flex-col gap-2">
           <div className="glass-panel-light px-3 py-2">
@@ -582,6 +713,29 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
               🧱 {modelInfo.meshCount} meshes
             </p>
           </div>
+
+          {/* DXF 레이어 선택 UI */}
+          {modelInfo.layers && modelInfo.layers.length > 0 && modelGroupRef.current?.userData?.isDXF && (
+            <div className="glass-panel-light px-3 py-2 mt-1">
+              <p className="text-[10px] text-blue-400 font-bold mb-1">DXF 레이어 선택 (중복 가능)</p>
+              <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+                {modelInfo.layers.map((layer) => (
+                  <label key={layer} className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={selectedLayers.length === 0 || selectedLayers.includes(layer)}
+                      onChange={() => handleLayerToggle(layer)}
+                      className="accent-blue-500"
+                    />
+                    <span style={{ color: modelInfo.layerColors?.[layer] ? `#${modelInfo.layerColors[layer].toString(16).padStart(6, '0')}` : undefined }}>
+                      {layer}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[9px] text-surface-500 mt-1">※ 아무것도 선택하지 않으면 전체 표시</p>
+            </div>
+          )}
 
           {/* Selection Object Info Bubble */}
           {selectedId && (
@@ -700,8 +854,8 @@ export default function IFCViewer({ activeFile, refreshTrigger, onSelectElement 
                 <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
               </svg>
             </div>
-            <p className="text-surface-500 text-sm">IFC 파일을 선택하여 3D 뷰 시작</p>
-            <p className="text-surface-600 text-xs mt-1">DXF 업로드 시 자동 변환됩니다</p>
+            <p className="text-surface-500 text-sm">도면(DXF) 또는 모델(IFC) 파일을 선택하세요</p>
+            <p className="text-surface-600 text-xs mt-1">도면은 웹에서 확인 후 바로 모델링이 가능합니다</p>
           </div>
         </div>
       )}

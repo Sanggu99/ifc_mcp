@@ -143,3 +143,37 @@ export async function modifyElement(filename, expressId, action, parameters) {
 
   return response.json();
 }
+
+/**
+ * DXF 도면 정보 가져오기
+ */
+export async function getDXFView(filename) {
+  const response = await fetch(`${API_BASE}/dxf/view/${encodeURIComponent(filename)}`);
+  if (!response.ok) {
+    throw new Error('DXF 정보를 불러올 수 없습니다.');
+  }
+  return response.json();
+}
+
+/**
+ * DXF 특정 레이어 돌출 (벽 생성)
+ */
+export async function extrudeDXFLayer(filename, targetLayer, heightMm, plane = 'XY') {
+  const response = await fetch(`${API_BASE}/dxf/extrude`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename,
+      target_layer: targetLayer,
+      height_mm: heightMm,
+      plane: plane
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: '돌출 실패' }));
+    throw new Error(error.detail || 'DXF 레이어 돌출에 실패했습니다.');
+  }
+
+  return response.json();
+}

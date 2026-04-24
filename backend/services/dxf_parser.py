@@ -71,6 +71,7 @@ class LineSegment:
     end: Point3D
     layer: str = ""
     ifc_type: str = "IfcBuildingElementProxy"
+    color: Optional[tuple] = None  # (r, g, b)
 
 
 @dataclass
@@ -79,6 +80,7 @@ class PolylineData:
     is_closed: bool = False
     layer: str = ""
     ifc_type: str = "IfcBuildingElementProxy"
+    color: Optional[tuple] = None  # (r, g, b)
 
 
 @dataclass
@@ -174,6 +176,7 @@ def parse_dxf(filepath: str) -> DXFParseResult:
 
     result = DXFParseResult(unit_scale=unit_scale)
 
+
     # ── Collect all layers and classify ────────────────────────────────
     has_known_layers = False
     for layer in doc.layers:
@@ -183,13 +186,37 @@ def parse_dxf(filepath: str) -> DXFParseResult:
         if ifc_type != "IfcBuildingElementProxy":
             has_known_layers = True
 
+    # 레이어 색상 캐시 (ACI)
+    layer_aci_map = {layer.dxf.name: layer.color for layer in doc.layers}
+
+
     # ── Parse LINE entities ────────────────────────────────────────────
+
     for entity in msp.query("LINE"):
         layer_name = entity.dxf.layer
         ifc_type = result.layers.get(layer_name, classify_layer(layer_name))
 
         start = entity.dxf.start
         end = entity.dxf.end
+
+        # 색상 추출: true color → 엔티티 ACI → 레이어 ACI
+        color = None
+        try:
+            aci = getattr(entity.dxf, 'color', None)
+            true_color = getattr(entity.dxf, 'true_color', None)
+            layer_aci = layer_aci_map.get(layer_name)
+            print(f"[DEBUG] LINE layer={layer_name} entity.aci={aci} entity.true_color={true_color} layer_aci={layer_aci}")
+            if true_color:
+                color = ezdxf.colors.int2rgb(true_color)
+            else:
+                if not aci or aci in (0, 256):
+                    aci = layer_aci
+                if aci and aci not in (0, 256):
+                    color = ezdxf.colors.aci_to_true_color(aci)
+            print(f"[DEBUG] LINE FINAL layer={layer_name} color={color}")
+        except Exception as e:
+            print(f"[ERROR] LINE color extract: {e}")
+            color = None
 
         line = LineSegment(
             start=Point3D(
@@ -204,10 +231,14 @@ def parse_dxf(filepath: str) -> DXFParseResult:
             ),
             layer=layer_name,
             ifc_type=ifc_type,
+            color=color,
         )
         result.lines.append(line)
 
+
+
     # ── Parse LWPOLYLINE entities ──────────────────────────────────────
+
     for entity in msp.query("LWPOLYLINE"):
         layer_name = entity.dxf.layer
         ifc_type = result.layers.get(layer_name, classify_layer(layer_name))
@@ -221,11 +252,30 @@ def parse_dxf(filepath: str) -> DXFParseResult:
             ))
 
         is_closed = entity.closed
+        color = None
+        try:
+            aci = getattr(entity.dxf, 'color', None)
+            true_color = getattr(entity.dxf, 'true_color', None)
+            layer_aci = layer_aci_map.get(layer_name)
+            print(f"[DEBUG] LWPOLYLINE layer={layer_name} entity.aci={aci} entity.true_color={true_color} layer_aci={layer_aci}")
+            if true_color:
+                color = ezdxf.colors.int2rgb(true_color)
+            else:
+                if not aci or aci in (0, 256):
+                    aci = layer_aci
+                if aci and aci not in (0, 256):
+                    color = ezdxf.colors.aci_to_true_color(aci)
+            print(f"[DEBUG] LWPOLYLINE FINAL layer={layer_name} color={color}")
+        except Exception as e:
+            print(f"[ERROR] LWPOLYLINE color extract: {e}")
+            color = None
+
         poly = PolylineData(
             points=points,
             is_closed=is_closed,
             layer=layer_name,
             ifc_type=ifc_type,
+            color=color,
         )
         result.polylines.append(poly)
 

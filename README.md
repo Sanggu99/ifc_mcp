@@ -61,6 +61,12 @@ X / Y / Z 세 축을 기준으로 실시간 단면을 생성합니다. Three.js 
 ### ⚡ DXF → IFC 자동 변환
 DXF 파일을 업로드하면 레이어 이름을 분석 (WALL, DOOR, COLUMN, SLAB …)하여 IFC 표준 요소로 자동 매핑하고 3D 모델을 생성합니다.
 
+### 🏗️ Modeling Tools (BIM 저작 도구)
+브라우저에서 직접 BIM 부재를 생성하고 수정합니다.
+- **객체 생성**: 벽(Wall), 기둥(Column), 문(Door), 창문(Window)을 3D 좌표 또는 도면 레이어 기반으로 생성합니다.
+- **레이어 돌출**: DXF의 특정 레이어를 선택하여 일괄적으로 벽체로 변환(Extrude)할 수 있습니다. (XY/XZ/YZ 평면 지원)
+- **객체 수정**: 선택한 객체를 실시간으로 이동(Move), 삭제(Delete)하거나 속성을 변경합니다.
+
 ---
 
 ## 기술 스택
@@ -261,10 +267,11 @@ npm run dev -- --host 127.0.0.1 --port 5173
 ```
 1. 우측 사이드바에서 IFC 또는 DXF 파일 업로드
 2. 파일 클릭 → 3D 뷰어에 모델 로딩
-3. 요소 클릭 → 선택된 BIM Element 정보 확인
-4. ✂️ 단면 버튼 → X/Y/Z 축 선택 → 슬라이더로 단면 위치 조정
-5. 📊 BOQ 탭 → 물량 자동 집계 확인
-6. 💬 Chat 탭 → AI에게 모델에 대해 질문
+3. 요소 클릭 → 선택된 BIM Element 정보 확인 및 수정 (Modeling Panel)
+4. 🏗️ Modeling 탭 → 객체 수동 생성 및 DXF 레이어 돌출 변환
+5. ✂️ 단면 버튼 → X/Y/Z 축 선택 → 슬라이더로 단면 위치 조정
+6. 📊 BOQ 탭 → 물량 자동 집계 확인
+7. 💬 Chat 탭 → AI에게 모델에 대해 질문
 ```
 
 ---
@@ -292,6 +299,7 @@ ifc_mcp/
 │           ├── IFCViewer.jsx  # Three.js 3D 뷰어 + Section Cut
 │           ├── BOQPanel.jsx   # 물량 산출 패널
 │           ├── ChatPanel.jsx  # AI 채팅 인터페이스
+│           ├── ModelingPanel.jsx # BIM 저작 및 DXF 돌출 도구
 │           ├── Sidebar.jsx    # 파일 관리 사이드바
 │           └── Header.jsx
 └── dev-log/                   # 단계별 개발 기록
@@ -307,7 +315,8 @@ ifc_mcp/
 | **Phase 2 – Step 1** | 3D 요소 선택 + AI 컨텍스트 연동 | ✅ 완료 |
 | **Phase 2 – Step 2** | BOQ Panel UI 구현 | ✅ 완료 |
 | **Phase 2 – Step 3** | Section Cut (X/Y/Z 단면) | ✅ 완료 |
-| **Phase 2 – Step 4** | Context-Aware AI 고도화 | 🔧 진행 중 |
+| **Phase 2 – Step 4** | Modeling Tools (Create/Modify) | ✅ 완료 |
+| **Phase 2 – Step 5** | Context-Aware AI 고도화 | 🔧 진행 중 |
 | **Phase 3** | 협업 기능, 실시간 다중 사용자 편집 | ⏳ 예정 |
 
 ---

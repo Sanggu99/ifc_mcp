@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { createElement, modifyElement } from '../utils/api';
+import { createElement, modifyElement, getDXFView, extrudeDXFLayer } from '../utils/api';
 
-export default function ModelingPanel({ activeFile, selectedElement, onRefresh }) {
+export default function ModelingPanel({ activeFile, selectedElement, onRefresh, dxfPlane, setDxfPlane }) {
   const [activeTool, setActiveTool] = useState(null); // 'Wall', 'Column', 'Door', 'Window'
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
@@ -17,6 +17,24 @@ export default function ModelingPanel({ activeFile, selectedElement, onRefresh }
   });
 
   const [pickMode, setPickMode] = useState(null); // 'start', 'end', 'pos'
+
+  // DXF specific state
+  const [dxfLayers, setDxfLayers] = useState([]);
+  const [selectedLayer, setSelectedLayer] = useState('');
+  const [extrudeHeight, setExtrudeHeight] = useState(3000); // 3000mm
+
+  React.useEffect(() => {
+    if (activeFile && activeFile.toLowerCase().endsWith('.dxf')) {
+      getDXFView(activeFile).then(data => {
+        setDxfLayers(data.layers || []);
+        if (data.layers && data.layers.length > 0 && !selectedLayer) {
+          setSelectedLayer(data.layers[0]);
+        }
+      }).catch(e => console.error(e));
+    } else {
+      setDxfLayers([]);
+    }
+  }, [activeFile]);
 
   // Update coordinates from 3D viewer click
   React.useEffect(() => {
@@ -78,6 +96,27 @@ export default function ModelingPanel({ activeFile, selectedElement, onRefresh }
     }
   };
 
+  const handleExtrudeLayer = async () => {
+    if (!activeFile || !selectedLayer) return;
+    setLoading(true);
+    setMessage(null);
+    try {
+      const res = await extrudeDXFLayer(activeFile, selectedLayer, extrudeHeight, dxfPlane);
+      if (res.success) {
+        setMessage({ type: 'success', text: `생성 완료: ${res.output_file}` });
+        onRefresh();
+      } else {
+        setMessage({ type: 'error', text: res.message || '돌출 실패' });
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const isDXF = activeFile && activeFile.toLowerCase().endsWith('.dxf');
+
   return (
     <div className="flex flex-col h-full bg-surface-950/80 backdrop-blur-md border-l border-white/5">
       <div className="p-4 border-b border-white/5 bg-surface-900/50">
@@ -85,13 +124,69 @@ export default function ModelingPanel({ activeFile, selectedElement, onRefresh }
           <svg className="w-4 h-4 text-accent-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
           </svg>
-          Revit Modeling Tools
+          {isDXF ? 'DXF Modeling Tools' : 'Revit Modeling Tools'}
         </h3>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {/* Creation Tools */}
-        <section className="space-y-3">
+        {isDXF ? (
+          <section className="space-y-4">
+            <p className="text-[10px] uppercase font-bold text-surface-500 tracking-wider flex items-center gap-2">
+              <span className="w-1 h-3 bg-blue-500 rounded-full"></span>
+              도면 레이어 기반 벽체 생성
+            </p>
+            
+            <div className="glass-panel-light p-4 space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs text-surface-300 font-medium ml-1">도면 평면 (Drawing Plane)</label>
+                <select 
+                  className="w-full bg-surface-900 border border-white/10 rounded-lg p-2 text-sm text-white focus:border-blue-500 outline-none"
+                  value={dxfPlane}
+                  onChange={(e) => setDxfPlane(e.target.value)}
+                >
+                  <option value="XY">XY 평면 (기본, 평면도)</option>
+                  <option value="XZ">XZ 평면 (입면도)</option>
+                  <option value="YZ">YZ 평면 (측면도)</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-surface-300 font-medium ml-1">대상 레이어 (Layer)</label>
+                <select 
+                  className="w-full bg-surface-900 border border-white/10 rounded-lg p-2 text-sm text-white focus:border-blue-500 outline-none"
+                  value={selectedLayer}
+                  onChange={(e) => setSelectedLayer(e.target.value)}
+                >
+                  {dxfLayers.length === 0 && <option value="">레이어 없음</option>}
+                  {dxfLayers.map(layer => (
+                    <option key={layer} value={layer}>{layer}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-surface-300 font-medium ml-1">돌출 높이 (Z축, mm)</label>
+                <input 
+                  type="number" 
+                  value={extrudeHeight} 
+                  onChange={(e) => setExtrudeHeight(Number(e.target.value))} 
+                  className="w-full bg-surface-900 border border-white/10 rounded-lg p-2 text-sm text-white focus:border-blue-500 outline-none" 
+                />
+              </div>
+
+              <button
+                onClick={handleExtrudeLayer}
+                disabled={loading || !selectedLayer}
+                className="w-full py-2.5 mt-2 bg-blue-600 hover:bg-blue-500 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
+              >
+                {loading ? <div className="spinner-xs" /> : '선택한 레이어로 벽체(Wall) 생성'}
+              </button>
+            </div>
+          </section>
+        ) : (
+          <>
+            {/* Creation Tools */}
+            <section className="space-y-3">
           <p className="text-[10px] uppercase font-bold text-surface-500 tracking-wider flex items-center gap-2">
             <span className="w-1 h-3 bg-accent-500 rounded-full"></span>
             객체 생성 (Create)
@@ -285,6 +380,8 @@ export default function ModelingPanel({ activeFile, selectedElement, onRefresh }
             </div>
           )}
         </section>
+        </>
+        )}
 
         {message && (
           <div className={`p-3 rounded-xl text-[10px] animate-fade-in ${
